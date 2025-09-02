@@ -4,6 +4,7 @@ import logging
 import uvicorn
 import json
 import uuid
+import asyncio # New import for the startup delay
 
 from fastapi import FastAPI, Request
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -41,16 +42,10 @@ async def notify(request: Request):
         data = await request.json()
         log.info(f"Received request on /notify: {data}")
 
-        # Generate a short, unique ID for this request.
         request_uuid = str(uuid.uuid4())
-        
-        # Store the full data in the bot's memory using the unique ID as a key.
         application = request.app.state.application
         application.bot_data[request_uuid] = data
-
         text = f"🚨 New Request Received:\n\nDetails: `{json.dumps(data, indent=2)}`"
-
-        # Use the short unique ID in the callback_data instead of the full JSON.
         keyboard = [
             [
                 InlineKeyboardButton("✅ Accept", callback_data=f"accept_{request_uuid}"),
@@ -58,7 +53,6 @@ async def notify(request: Request):
             ]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        
         bot = request.app.state.bot
         await bot.send_message(
             chat_id=ADMIN_CHAT_ID,
@@ -81,24 +75,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Hello! Your Chat ID is: {update.effective_chat.id}")
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Handles button clicks. It now uses the unique ID to retrieve the full request data.
-    """
+    """Handles button clicks."""
     query = update.callback_query
     await query.answer()
-
-    # The callback_data is now "action_uuid".
     action, request_uuid = query.data.split("_", 1)
-    
-    # Retrieve (and remove) the original data from bot_data using the ID.
     request_data = context.bot_data.pop(request_uuid, None)
-
     if not request_data:
         await query.edit_message_text(text="❓ This request has already been handled or has expired.")
         return
-
     pretty_data = json.dumps(request_data, indent=2)
-
     if action == "accept":
         new_text = f"✅ Request Accepted!\n\nDetails: `{pretty_data}`"
         await query.edit_message_text(text=new_text, parse_mode='MarkdownV2')
@@ -107,35 +92,34 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(text=new_text, parse_mode='MarkdownV2')
 
 async def post_startup(application: Application):
-    """
-    Runs once after the bot starts.
-    """
+    """Runs once after the bot starts, with a delay to prevent race conditions."""
     try:
+        log.info("Running post_startup...")
         await application.bot.delete_webhook(drop_pending_updates=True)
-        # Final version of the startup message for tracking deployments.
+        # --- NEW DELAY TO PREVENT RACE CONDITION ---
+        log.info("Waiting for 2 seconds before sending startup message...")
+        await asyncio.sleep(2) 
+        # --- NEW STARTUP MESSAGE ---
         await application.bot.send_message(
-            chat_id=ADMIN_CHAT_ID, text="✅ **CLEAN RESTART v3** - Bot is online."
+            chat_id=ADMIN_CHAT_ID, text="🚀 **ROBUST RESTART v4** - Bot is online."
         )
         app_api.state.bot = application.bot
-        app_api.state.application = application 
+        app_api.state.application = application
+        log.info("post_startup completed successfully.")
     except Exception as e:
         log.warning(f"Startup notify failed: {e}")
 
 def main():
     """Main function to set up and run everything."""
     application = Application.builder().token(BOT_TOKEN).post_init(post_startup).build()
-    
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(button_callback))
-
     fastapi_thread = threading.Thread(
         target=start_uvicorn_in_thread,
         args=(app_api,),
         daemon=True
     )
     fastapi_thread.start()
-    log.info(f"Started FastAPI on port {PORT} in a background thread.")
-
     log.info("Starting Telegram bot polling...")
     application.run_polling()
 
