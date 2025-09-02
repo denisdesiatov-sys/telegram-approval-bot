@@ -36,7 +36,7 @@ async def healthz():
 @app_api.post("/notify")
 async def notify(request: Request):
     """
-    Receives a request, stores the data, and sends a notification with a unique ID.
+    Receives a request, stores the data, and sends a notification.
     """
     try:
         data = await request.json()
@@ -45,7 +45,10 @@ async def notify(request: Request):
         request_uuid = str(uuid.uuid4())
         application = request.app.state.application
         application.bot_data[request_uuid] = data
-        text = f"🚨 New Request Received:\n\nDetails: `{json.dumps(data, indent=2)}`"
+        
+        # We now create a simple plain text message.
+        text = f"🚨 New Request Received:\n\nDetails:\n{json.dumps(data, indent=2)}"
+        
         keyboard = [
             [
                 InlineKeyboardButton("✅ Accept", callback_data=f"accept_{request_uuid}"),
@@ -54,11 +57,12 @@ async def notify(request: Request):
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         bot = request.app.state.bot
+        
         await bot.send_message(
             chat_id=ADMIN_CHAT_ID,
             text=text,
-            reply_markup=reply_markup,
-            parse_mode='MarkdownV2'
+            reply_markup=reply_markup
+            # The parse_mode='MarkdownV2' argument has been REMOVED.
         )
         return {"status": "notification_sent"}
     except Exception as e:
@@ -88,22 +92,26 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not request_data:
         await query.edit_message_text(text="❓ This request has already been handled or has expired.")
         return
+        
     pretty_data = json.dumps(request_data, indent=2)
+    
     if action == "accept":
-        new_text = f"✅ Request Accepted!\n\nDetails: `{pretty_data}`"
-        await query.edit_message_text(text=new_text, parse_mode='MarkdownV2')
+        new_text = f"✅ Request Accepted!\n\nDetails:\n{pretty_data}"
+        # The parse_mode has been REMOVED from here as well.
+        await query.edit_message_text(text=new_text)
     elif action == "decline":
-        new_text = f"❌ Request Declined!\n\nDetails: `{pretty_data}`"
-        await query.edit_message_text(text=new_text, parse_mode='MarkdownV2')
+        new_text = f"❌ Request Declined!\n\nDetails:\n{pretty_data}"
+        # And from here.
+        await query.edit_message_text(text=new_text)
 
 async def post_startup(application: Application):
-    """Runs once after the bot starts, with a delay to prevent race conditions."""
+    """Runs once after the bot starts."""
     try:
         log.info("Running post_startup...")
         await application.bot.delete_webhook(drop_pending_updates=True)
         await asyncio.sleep(2) 
         await application.bot.send_message(
-            chat_id=ADMIN_CHAT_ID, text="✅ **FINAL VERSION v5** - Bot is online."
+            chat_id=ADMIN_CHAT_ID, text="🚀 **PRODUCTION v6** - Bot is online and working."
         )
         app_api.state.bot = application.bot
         app_api.state.application = application
@@ -115,7 +123,6 @@ def main():
     """Main function to set up and run everything."""
     application = Application.builder().token(BOT_TOKEN).post_init(post_startup).build()
     
-    # Add handlers for all commands
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("request_demo", request_demo))
     application.add_handler(CallbackQueryHandler(button_callback))
