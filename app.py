@@ -1,19 +1,16 @@
 import os
-import threading
 import logging
 import uvicorn
 import json
 import uuid
 import asyncio
-
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
 # --- Logging ---
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 log = logging.getLogger(__name__)
 
@@ -21,34 +18,59 @@ log = logging.getLogger(__name__)
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 ADMIN_CHAT_ID = int(os.environ.get("ADMIN_CHAT_ID"))
 PORT = int(os.environ.get("PORT", 8080))
+# The full URL of your Render service (e.g., https://your-app-name.onrender.com)
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
 
-if not BOT_TOKEN or not ADMIN_CHAT_ID:
-    raise ValueError("Error: BOT_TOKEN and ADMIN_CHAT_ID environment variables must be set.")
+if not all([BOT_TOKEN, ADMIN_CHAT_ID, WEBHOOK_URL]):
+    raise ValueError("Error: BOT_TOKEN, ADMIN_CHAT_ID, and WEBHOOK_URL environment variables must be set.")
+
+# --- Bot Setup ---
+# We build the application first, so it can be used in the FastAPI app state.
+application = Application.builder().token(BOT_TOKEN).build()
 
 # --- FastAPI Web Server ---
+# The web server is now the main application.
 app_api = FastAPI()
 
-@app_api.get("/healthz")
-async def healthz():
-    """A simple health check endpoint."""
-    return {"status": "ok"}
+@app_api.on_event("startup")
+async def startup_event():
+    """On startup, set the webhook and send a confirmation message."""
+    try:
+        log.info(f"Setting webhook to {WEBHOOK_URL}/webhook")
+        await application.bot.set_webhook(url=f"{WEBHOOK_URL}/webhook", allowed_updates=Update.ALL_TYPES)
+        # Give it a moment to register before sending a message
+        await asyncio.sleep(2)
+        await application.bot.send_message(
+            chat_id=ADMIN_CHAT_ID, text="✅ **WEBHOOK v7** - Bot is online and running in production mode."
+        )
+        # Store the application instance in the app's state
+        app_api.state.application = application
+    except Exception as e:
+        log.error(f"Startup error: {e}")
+
+@app_api.post("/webhook")
+async def webhook(request: Request):
+    """This endpoint receives updates from Telegram."""
+    try:
+        data = await request.json()
+        async with application:
+            await application.process_update(Update.de_json(data, application.bot))
+        return Response(status_code=200)
+    except Exception as e:
+        log.error(f"Error in webhook: {e}")
+        return Response(status_code=500)
 
 @app_api.post("/notify")
 async def notify(request: Request):
-    """
-    Receives a request, stores the data, and sends a notification.
-    """
+    """Receives an external request and sends a notification."""
     try:
         data = await request.json()
         log.info(f"Received request on /notify: {data}")
-
         request_uuid = str(uuid.uuid4())
-        application = request.app.state.application
-        application.bot_data[request_uuid] = data
-        
-        # We now create a simple plain text message.
+        # Access the application instance from the app's state
+        app = request.app.state.application
+        app.bot_data[request_uuid] = data
         text = f"🚨 New Request Received:\n\nDetails:\n{json.dumps(data, indent=2)}"
-        
         keyboard = [
             [
                 InlineKeyboardButton("✅ Accept", callback_data=f"accept_{request_uuid}"),
@@ -56,24 +78,15 @@ async def notify(request: Request):
             ]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        bot = request.app.state.bot
-        
-        await bot.send_message(
-            chat_id=ADMIN_CHAT_ID,
-            text=text,
-            reply_markup=reply_markup
-            # The parse_mode='MarkdownV2' argument has been REMOVED.
+        await app.bot.send_message(
+            chat_id=ADMIN_CHAT_ID, text=text, reply_markup=reply_markup
         )
         return {"status": "notification_sent"}
     except Exception as e:
         log.error(f"Error in /notify endpoint: {e}")
         return {"status": "error", "message": str(e)}
 
-def start_uvicorn_in_thread(app):
-    """Runs the Uvicorn server in a separate thread."""
-    uvicorn.run(app, host="0.0.0.0", port=PORT, log_level="info")
-
-# --- Telegram Bot ---
+# --- Telegram Handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler for the /start command."""
     await update.message.reply_text(f"Hello! Your Chat ID is: {update.effective_chat.id}")
@@ -81,7 +94,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def request_demo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler for the /request_demo command."""
     await update.message.reply_text("✅ Demo request received!")
-    log.info(f"Demo request received from chat ID: {update.effective_chat.id}")
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles button clicks."""
@@ -92,49 +104,17 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not request_data:
         await query.edit_message_text(text="❓ This request has already been handled or has expired.")
         return
-        
     pretty_data = json.dumps(request_data, indent=2)
-    
     if action == "accept":
-        new_text = f"✅ Request Accepted!\n\nDetails:\n{pretty_data}"
-        # The parse_mode has been REMOVED from here as well.
-        await query.edit_message_text(text=new_text)
+        await query.edit_message_text(text=f"✅ Request Accepted!\n\nDetails:\n{pretty_data}")
     elif action == "decline":
-        new_text = f"❌ Request Declined!\n\nDetails:\n{pretty_data}"
-        # And from here.
-        await query.edit_message_text(text=new_text)
+        await query.edit_message_text(text=f"❌ Request Declined!\n\nDetails:\n{pretty_data}")
 
-async def post_startup(application: Application):
-    """Runs once after the bot starts."""
-    try:
-        log.info("Running post_startup...")
-        await application.bot.delete_webhook(drop_pending_updates=True)
-        await asyncio.sleep(2) 
-        await application.bot.send_message(
-            chat_id=ADMIN_CHAT_ID, text="🚀 **PRODUCTION v6** - Bot is online and working."
-        )
-        app_api.state.bot = application.bot
-        app_api.state.application = application
-        log.info("post_startup completed successfully.")
-    except Exception as e:
-        log.warning(f"Startup notify failed: {e}")
+# Add all handlers to the application instance
+application.add_handler(CommandHandler("start", start))
+application.add_handler(CommandHandler("request_demo", request_demo))
+application.add_handler(CallbackQueryHandler(button_callback))
 
-def main():
-    """Main function to set up and run everything."""
-    application = Application.builder().token(BOT_TOKEN).post_init(post_startup).build()
-    
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("request_demo", request_demo))
-    application.add_handler(CallbackQueryHandler(button_callback))
-    
-    fastapi_thread = threading.Thread(
-        target=start_uvicorn_in_thread,
-        args=(app_api,),
-        daemon=True
-    )
-    fastapi_thread.start()
-    log.info("Starting Telegram bot polling...")
-    application.run_polling()
-
+# The main entrypoint for the server
 if __name__ == "__main__":
-    main()
+    uvicorn.run(app_api, host="0.0.0.0", port=PORT)
