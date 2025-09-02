@@ -41,16 +41,16 @@ async def notify(request: Request):
         data = await request.json()
         log.info(f"Received request on /notify: {data}")
 
-        # **FIX**: Generate a short, unique ID for this request.
+        # Generate a short, unique ID for this request.
         request_uuid = str(uuid.uuid4())
         
-        # **FIX**: Store the full data in the bot's memory using the unique ID as a key.
+        # Store the full data in the bot's memory using the unique ID as a key.
         application = request.app.state.application
         application.bot_data[request_uuid] = data
 
         text = f"🚨 New Request Received:\n\nDetails: `{json.dumps(data, indent=2)}`"
 
-        # **FIX**: Use the short unique ID in the callback_data instead of the full JSON.
+        # Use the short unique ID in the callback_data instead of the full JSON.
         keyboard = [
             [
                 InlineKeyboardButton("✅ Accept", callback_data=f"accept_{request_uuid}"),
@@ -90,7 +90,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # The callback_data is now "action_uuid".
     action, request_uuid = query.data.split("_", 1)
     
-    # **FIX**: Retrieve (and remove) the original data from bot_data using the ID.
+    # Retrieve (and remove) the original data from bot_data using the ID.
     request_data = context.bot_data.pop(request_uuid, None)
 
     if not request_data:
@@ -112,11 +112,10 @@ async def post_startup(application: Application):
     """
     try:
         await application.bot.delete_webhook(drop_pending_updates=True)
+        # Final version of the startup message for tracking deployments.
         await application.bot.send_message(
-            chat_id=ADMIN_CHAT_ID, text="🤖 Bot and API server started successfully! (v2)"
+            chat_id=ADMIN_CHAT_ID, text="✅ **CLEAN RESTART v3** - Bot is online."
         )
-        # **FIX**: Store the entire application object, not just the bot.
-        # This gives the API endpoint access to application.bot_data.
         app_api.state.bot = application.bot
         app_api.state.application = application 
     except Exception as e:
@@ -142,5 +141,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
