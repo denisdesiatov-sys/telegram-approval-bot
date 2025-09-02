@@ -74,7 +74,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler for the /start command."""
     await update.message.reply_text(f"Hello! Your Chat ID is: {update.effective_chat.id}")
 
-# --- THIS IS THE NEW FUNCTION TO HANDLE /request_demo ---
 async def request_demo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler for the /request_demo command."""
     await update.message.reply_text("✅ Demo request received!")
@@ -116,9 +115,9 @@ def main():
     """Main function to set up and run everything."""
     application = Application.builder().token(BOT_TOKEN).post_init(post_startup).build()
     
-    # --- ADD HANDLERS FOR ALL COMMANDS ---
+    # Add handlers for all commands
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("request_demo", request_demo)) # <-- THIS LINE IS NEW
+    application.add_handler(CommandHandler("request_demo", request_demo))
     application.add_handler(CallbackQueryHandler(button_callback))
     
     fastapi_thread = threading.Thread(
@@ -132,4 +131,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
