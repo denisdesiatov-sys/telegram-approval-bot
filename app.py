@@ -39,8 +39,6 @@ application = Application.builder().token(BOT_TOKEN).build()
 async def healthz():
     return {"status": "ok"}
 
-# --- THIS IS THE FIX ---
-# Changed from @app_api.post to @app_api.get to match the launcher's request.
 @app_api.get("/check_status/{machine_id}")
 async def check_status(machine_id: str):
     """Endpoint for the macOS launcher to poll for its approval status."""
@@ -60,10 +58,11 @@ async def notify(request: Request):
         machine_id = data.get("machine_id", "Unknown ID")
         approval_db[machine_id] = "pending"
         
+        # Use plain text for the request to avoid formatting issues.
         text = (
             f"❗️ New Permission Request ❗️\n\n"
-            f"👤 **User:** {user_name}\n"
-            f"💻 **Machine ID:** `{machine_id}`"
+            f"User: {user_name}\n"
+            f"Machine ID: {machine_id}"
         )
         keyboard = [
             [
@@ -73,12 +72,13 @@ async def notify(request: Request):
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await application.bot.send_message(
-            chat_id=ADMIN_CHAT_ID, text=text, reply_markup=reply_markup, parse_mode='MarkdownV2'
+            chat_id=ADMIN_CHAT_ID, text=text, reply_markup=reply_markup
         )
         return {"status": "permission_request_received"}
     else:
-        text = f"🔔 Notification:\n\n`{json.dumps(data, indent=2)}`"
-        await application.bot.send_message(chat_id=ADMIN_CHAT_ID, text=text, parse_mode='MarkdownV2')
+        # Send other notifications as plain text as well for consistency.
+        text = f"🔔 Notification:\n\n{json.dumps(data, indent=2)}"
+        await application.bot.send_message(chat_id=ADMIN_CHAT_ID, text=text)
         return {"status": "generic_notification_sent"}
 
 @app_api.post("/telegram")
@@ -91,20 +91,24 @@ async def telegram_webhook(request: Request):
 
 # --- Bot Command and Callback Handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(f"Hello! I am the remote approval bot (v11). Your Chat ID is: {update.effective_chat.id}")
+    await update.message.reply_text(f"Hello! I am the remote approval bot (v12). Your Chat ID is: {update.effective_chat.id}")
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles the admin's 'Approve' or 'Deny' clicks."""
     query = update.callback_query
     await query.answer()
     action, machine_id = query.data.split("_", 1)
-    user_info = f"Request for Machine ID:\n`{machine_id}`"
+    
+    # --- THIS IS THE FIX ---
+    # We now send the confirmation message as plain text, removing parse_mode.
+    user_info = f"Request for Machine ID: {machine_id}"
+    
     if action == "approve":
         approval_db[machine_id] = "approved"
-        await query.edit_message_text(text=f"✅ **Approved**\n\n{user_info}", parse_mode='MarkdownV2')
+        await query.edit_message_text(text=f"✅ Approved\n\n{user_info}")
     elif action == "deny":
         approval_db[machine_id] = "denied"
-        await query.edit_message_text(text=f"❌ **Denied**\n\n{user_info}", parse_mode='MarkdownV2')
+        await query.edit_message_text(text=f"❌ Denied\n\n{user_info}")
 
 application.add_handler(CommandHandler("start", start))
 application.add_handler(CallbackQueryHandler(button_callback))
