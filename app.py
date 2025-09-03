@@ -39,7 +39,9 @@ application = Application.builder().token(BOT_TOKEN).build()
 async def healthz():
     return {"status": "ok"}
 
-@app_api.post("/check_status/{machine_id}")
+# --- THIS IS THE FIX ---
+# Changed from @app_api.post to @app_api.get to match the launcher's request.
+@app_api.get("/check_status/{machine_id}")
 async def check_status(machine_id: str):
     """Endpoint for the macOS launcher to poll for its approval status."""
     status = approval_db.get(machine_id, "not_found")
@@ -89,7 +91,7 @@ async def telegram_webhook(request: Request):
 
 # --- Bot Command and Callback Handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(f"Hello! I am the remote approval bot (v10). Your Chat ID is: {update.effective_chat.id}")
+    await update.message.reply_text(f"Hello! I am the remote approval bot (v11). Your Chat ID is: {update.effective_chat.id}")
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles the admin's 'Approve' or 'Deny' clicks."""
@@ -112,7 +114,6 @@ application.add_handler(CallbackQueryHandler(button_callback))
 async def on_startup():
     """This function runs when the server starts. It initializes the bot and sets the webhook."""
     log.info("Server starting up...")
-    # --- FIX: Initialize the application ---
     await application.initialize()
     await application.bot.set_webhook(url=f"{WEBHOOK_URL}/telegram")
 
@@ -121,7 +122,6 @@ async def on_shutdown():
     """This function runs when the server shuts down. It removes the webhook."""
     log.info("Server shutting down...")
     await application.bot.delete_webhook()
-    # --- FIX: Shutdown the application ---
     await application.shutdown()
 
 if __name__ == "__main__":
