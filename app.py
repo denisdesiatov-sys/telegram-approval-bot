@@ -1,9 +1,7 @@
-import os
-import threading
+kimport os
 import logging
 import uvicorn
 import json
-import uuid
 import asyncio
 
 from fastapi import FastAPI, Request
@@ -27,13 +25,19 @@ if not all([BOT_TOKEN, ADMIN_CHAT_ID, WEBHOOK_URL]):
     raise ValueError("BOT_TOKEN, ADMIN_CHAT_ID, and WEBHOOK_URL must be set.")
 
 # --- In-Memory Database for Approval Status ---
-# In a real production app, you would use a database like Redis or Firestore.
 # Format: {"machine_id_1": "pending", "machine_id_2": "approved"}
 approval_db = {}
 
 # --- FastAPI Web Server ---
 app_api = FastAPI()
 
+# --- Telegram Bot Application Setup ---
+# We configure the bot application but don't run it directly.
+# Uvicorn will run the FastAPI app, which will in turn manage the bot.
+application = Application.builder().token(BOT_TOKEN).build()
+
+
+# --- FastAPI Endpoints ---
 @app_api.get("/healthz")
 async def healthz():
     return {"status": "ok"}
@@ -47,17 +51,14 @@ async def check_status(machine_id: str):
 
 @app_api.post("/notify")
 async def notify(request: Request):
-    """Handles incoming requests from launchers or other services."""
+    """Handles incoming requests from launchers."""
     data = await request.json()
     log.info(f"Received request on /notify: {data}")
     event_type = data.get("event")
     
-    # This is a new user asking for permission for the first time.
     if event_type == "Permission Requested":
         user_name = data.get("user", "Unknown User")
         machine_id = data.get("machine_id", "Unknown ID")
-        
-        # Store the request as pending.
         approval_db[machine_id] = "pending"
         
         text = (
@@ -65,7 +66,6 @@ async def notify(request: Request):
             f"👤 **User:** {user_name}\n"
             f"💻 **Machine ID:** `{machine_id}`"
         )
-        # The callback_data now includes the machine_id to identify the user.
         keyboard = [
             [
                 InlineKeyboardButton("✅ Approve", callback_data=f"approve_{machine_id}"),
@@ -73,35 +73,34 @@ async def notify(request: Request):
             ]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        bot = request.app.state.bot
-        await bot.send_message(
-            chat_id=ADMIN_CHAT_ID,
-            text=text,
-            reply_markup=reply_markup,
-            parse_mode='MarkdownV2'
+        await application.bot.send_message(
+            chat_id=ADMIN_CHAT_ID, text=text, reply_markup=reply_markup, parse_mode='MarkdownV2'
         )
         return {"status": "permission_request_received"}
-    
-    # Handle other generic notifications (like the setup confirmation).
     else:
         text = f"🔔 Notification:\n\n`{json.dumps(data, indent=2)}`"
-        bot = request.app.state.bot
-        await bot.send_message(chat_id=ADMIN_CHAT_ID, text=text, parse_mode='MarkdownV2')
+        await application.bot.send_message(chat_id=ADMIN_CHAT_ID, text=text, parse_mode='MarkdownV2')
         return {"status": "generic_notification_sent"}
 
-# --- Telegram Bot (Webhook Mode) ---
+# This is the single endpoint that Telegram will send all updates to.
+@app_api.post("/telegram")
+async def telegram_webhook(request: Request):
+    """Handle incoming Telegram updates by passing them to the bot application."""
+    update_data = await request.json()
+    update = Update.de_json(update_data, application.bot)
+    await application.process_update(update)
+    return {"status": "ok"}
+
+# --- Bot Command and Callback Handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(f"Hello! I am the approval bot. Your Chat ID is: {update.effective_chat.id}")
+    await update.message.reply_text(f"Hello! I am the remote approval bot (v9). Your Chat ID is: {update.effective_chat.id}")
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles the admin's 'Approve' or 'Deny' clicks."""
     query = update.callback_query
     await query.answer()
-    
     action, machine_id = query.data.split("_", 1)
-    
     user_info = f"Request for Machine ID:\n`{machine_id}`"
-    
     if action == "approve":
         approval_db[machine_id] = "approved"
         await query.edit_message_text(text=f"✅ **Approved**\n\n{user_info}", parse_mode='MarkdownV2')
@@ -109,25 +108,23 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         approval_db[machine_id] = "denied"
         await query.edit_message_text(text=f"❌ **Denied**\n\n{user_info}", parse_mode='MarkdownV2')
 
-async def main():
-    """Sets up and runs the bot in webhook mode."""
-    application = Application.builder().token(BOT_TOKEN).build()
-    
-    # Pass the bot instance to the FastAPI app state.
-    app_api.state.bot = application.bot
-    
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CallbackQueryHandler(button_callback))
-    
-    # Set up the webhook.
-    await application.bot.set_webhook(url=f"{WEBHOOK_URL}/telegram")
-    
-    # Create a custom Uvicorn server configuration.
-    config = uvicorn.Config(app=application.asgi_app, host="0.0.0.0", port=PORT)
-    server = uvicorn.Server(config)
-    
-    log.info("Starting bot and server...")
-    await server.serve()
+# Add the handlers to the application.
+application.add_handler(CommandHandler("start", start))
+application.add_handler(CallbackQueryHandler(button_callback))
 
+# --- Server Startup and Shutdown Events ---
+@app_api.on_event("startup")
+async def on_startup():
+    """This function runs when the server starts. It sets the webhook."""
+    log.info("Server starting up. Setting webhook...")
+    await application.bot.set_webhook(url=f"{WEBHOOK_URL}/telegram")
+
+@app_api.on_event("shutdown")
+async def on_shutdown():
+    """This function runs when the server shuts down. It removes the webhook."""
+    log.info("Server shutting down. Deleting webhook...")
+    await application.bot.delete_webhook()
+
+# --- Main entry point to run the server ---
 if __name__ == "__main__":
-    asyncio.run(main())
+    uvicorn.run(app_api, host="0.0.0.0", port=PORT)
