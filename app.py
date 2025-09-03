@@ -58,7 +58,6 @@ async def notify(request: Request):
         machine_id = data.get("machine_id", "Unknown ID")
         approval_db[machine_id] = "pending"
         
-        # Use plain text for the request to avoid formatting issues.
         text = (
             f"❗️ New Permission Request ❗️\n\n"
             f"User: {user_name}\n"
@@ -76,7 +75,6 @@ async def notify(request: Request):
         )
         return {"status": "permission_request_received"}
     else:
-        # Send other notifications as plain text as well for consistency.
         text = f"🔔 Notification:\n\n{json.dumps(data, indent=2)}"
         await application.bot.send_message(chat_id=ADMIN_CHAT_ID, text=text)
         return {"status": "generic_notification_sent"}
@@ -85,29 +83,40 @@ async def notify(request: Request):
 async def telegram_webhook(request: Request):
     """Handle incoming Telegram updates by passing them to the bot application."""
     update_data = await request.json()
-    update = Update.de_json(update_data, application.bot)
-    await application.process_update(update)
-    return {"status": "ok"}
+    # --- NEW DEBUG LOG ---
+    log.info(f"--- RAW TELEGRAM DATA RECEIVED ---\n{json.dumps(update_data, indent=2)}")
+    
+    try:
+        update = Update.de_json(update_data, application.bot)
+        await application.process_update(update)
+        return {"status": "ok"}
+    except Exception as e:
+        log.error(f"--- CRITICAL ERROR processing update: {e} ---", exc_info=True)
+        return {"status": "error"}
+
 
 # --- Bot Command and Callback Handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(f"Hello! I am the remote approval bot (v12). Your Chat ID is: {update.effective_chat.id}")
+    await update.message.reply_text(f"Hello! I am the remote approval bot (v13-debug). Your Chat ID is: {update.effective_chat.id}")
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles the admin's 'Approve' or 'Deny' clicks."""
+    # --- NEW DEBUG LOG ---
+    log.info("--- button_callback function was successfully called! ---")
     query = update.callback_query
-    await query.answer()
+    await query.answer() # This stops the "Loading..." on the button.
+    
     action, machine_id = query.data.split("_", 1)
     
-    # --- THIS IS THE FIX ---
-    # We now send the confirmation message as plain text, removing parse_mode.
     user_info = f"Request for Machine ID: {machine_id}"
     
     if action == "approve":
         approval_db[machine_id] = "approved"
+        log.info(f"Status for {machine_id} set to 'approved'")
         await query.edit_message_text(text=f"✅ Approved\n\n{user_info}")
     elif action == "deny":
         approval_db[machine_id] = "denied"
+        log.info(f"Status for {machine_id} set to 'denied'")
         await query.edit_message_text(text=f"❌ Denied\n\n{user_info}")
 
 application.add_handler(CommandHandler("start", start))
@@ -116,19 +125,17 @@ application.add_handler(CallbackQueryHandler(button_callback))
 # --- Server Startup and Shutdown Events ---
 @app_api.on_event("startup")
 async def on_startup():
-    """This function runs when the server starts. It initializes the bot and sets the webhook."""
     log.info("Server starting up...")
     await application.initialize()
     await application.bot.set_webhook(url=f"{WEBHOOK_URL}/telegram")
 
 @app_api.on_event("shutdown")
 async def on_shutdown():
-    """This function runs when the server shuts down. It removes the webhook."""
     log.info("Server shutting down...")
     await application.bot.delete_webhook()
     await application.shutdown()
 
 if __name__ == "__main__":
-    uvicorn.run(app_api, host="0.0.0.0", port=PORT)
+    uvicorn.run(app_api, host="host.docker.internal", port=PORT)
 
 
