@@ -150,6 +150,5 @@ async def on_shutdown():
 
 if __name__ == "__main__":
     uvicorn.run(app_api, host="0.0.0.0", port=PORT)
-    
-
+# --- FINAL DEPLOYMENT - SEPTEMBER 3 ---
 
