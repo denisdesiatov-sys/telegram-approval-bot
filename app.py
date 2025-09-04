@@ -5,8 +5,8 @@ import json
 import asyncio
 
 from fastapi import FastAPI, Request
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+from telegram import Update
+from telegram.ext import Application, CommandHandler
 
 # --- Logging ---
 logging.basicConfig(
@@ -31,6 +31,7 @@ approval_db = {}
 app_api = FastAPI()
 
 # --- Telegram Bot Application Setup ---
+# We only use this for its .bot attribute to send messages and for initialization.
 application = Application.builder().token(BOT_TOKEN).build()
 
 
@@ -65,13 +66,12 @@ async def notify(request: Request):
         )
         keyboard = [
             [
-                InlineKeyboardButton("✅ Approve", callback_data=f"approve_{machine_id}"),
-                InlineKeyboardButton("❌ Deny", callback_data=f"deny_{machine_id}"),
+                {"text": "✅ Approve", "callback_data": f"approve_{machine_id}"},
+                {"text": "❌ Deny", "callback_data": f"deny_{machine_id}"},
             ]
         ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
         await application.bot.send_message(
-            chat_id=ADMIN_CHAT_ID, text=text, reply_markup=reply_markup
+            chat_id=ADMIN_CHAT_ID, text=text, reply_markup={"inline_keyboard": keyboard}
         )
         return {"status": "permission_request_received"}
     else:
@@ -79,67 +79,101 @@ async def notify(request: Request):
         await application.bot.send_message(chat_id=ADMIN_CHAT_ID, text=text)
         return {"status": "generic_notification_sent"}
 
+# --- THIS IS THE NEW, ROBUST WEBHOOK HANDLER ---
 @app_api.post("/telegram")
 async def telegram_webhook(request: Request):
-    """Handle incoming Telegram updates by passing them to the bot application."""
-    update_data = await request.json()
-    update = Update.de_json(update_data, application.bot)
-    await application.process_update(update)
-    return {"status": "ok"}
-
-# --- Bot Command and Callback Handlers ---
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(f"Hello! I am the remote approval bot (v16-final). Your Chat ID is: {update.effective_chat.id}")
-
-async def clear_cache(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Admin-only command to clear the in-memory approval database."""
-    user_id = update.effective_chat.id
-    if user_id == ADMIN_CHAT_ID:
-        global approval_db
-        approval_db.clear()
-        await update.message.reply_text("✅ Server cache cleared. You can now re-test.")
-        log.info("Approval cache cleared by admin.")
-    else:
-        await update.message.reply_text("⛔️ You are not authorized to use this command.")
-
-async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handles the admin's 'Approve' or 'Deny' clicks."""
-    # --- THIS IS THE FIX ---
-    # We must declare that we are modifying the global approval_db variable.
+    """
+    This single function now handles all incoming updates from Telegram manually.
+    """
     global approval_db
-    
-    query = update.callback_query
-    await query.answer() # Acknowledge the button press
-    
-    action, machine_id = query.data.split("_", 1)
-    
-    user_info = f"Request for Machine ID: {machine_id}"
-    
-    if action == "approve":
-        approval_db[machine_id] = "approved"
-        await query.edit_message_text(text=f"✅ Approved\n\n{user_info}")
-    elif action == "deny":
-        approval_db[machine_id] = "denied"
-        await query.edit_message_text(text=f"❌ Denied\n\n{user_info}")
+    update_data = await request.json()
+    log.info(f"--- Received update from Telegram: {update_data}")
 
-application.add_handler(CommandHandler("start", start))
-application.add_handler(CommandHandler("clear_cache", clear_cache))
-application.add_handler(CallbackQueryHandler(button_callback))
+    # Check if this is a button press (a callback_query)
+    if "callback_query" in update_data:
+        callback_query = update_data["callback_query"]
+        callback_data = callback_query["data"]
+        message_id = callback_query["message"]["message_id"]
+        
+        # Acknowledge the button press to stop the "Loading..." spinner
+        await application.bot.answer_callback_query(callback_query_id=callback_query["id"])
+        
+        action, machine_id = callback_data.split("_", 1)
+        user_info = f"Request for Machine ID: {machine_id}"
+        
+        if action == "approve":
+            approval_db[machine_id] = "approved"
+            await application.bot.edit_message_text(text=f"✅ Approved\n\n{user_info}", chat_id=ADMIN_CHAT_ID, message_id=message_id)
+        elif action == "deny":
+            approval_db[machine_id] = "denied"
+            await application.bot.edit_message_text(text=f"❌ Denied\n\n{user_info}", chat_id=ADMIN_CHAT_ID, message_id=message_id)
+            
+    # Check if it's a regular command message
+    elif "message" in update_data and "text" in update_data["message"]:
+        message = update_data["message"]
+        chat_id = message["chat"]["id"]
+        text = message["text"]
+        
+        if text == "/start":
+            await application.bot.send_message(chat_id=chat_id, text=f"Hello! I am the remote approval bot (v17-final). Your Chat ID is: {chat_id}")
+        elif text == "/clear_cache" and chat_id == ADMIN_CHAT_ID:
+            approval_db.clear()
+            await application.bot.send_message(chat_id=chat_id, text="✅ Server cache cleared.")
+            log.info("Approval cache cleared by admin.")
+
+    return {"status": "ok"}
 
 # --- Server Startup and Shutdown Events ---
 @app_api.on_event("startup")
 async def on_startup():
     log.info("Server starting up...")
-    await application.initialize()
     await application.bot.set_webhook(url=f"{WEBHOOK_URL}/telegram")
 
 @app_api.on_event("shutdown")
 async def on_shutdown():
     log.info("Server shutting down...")
     await application.bot.delete_webhook()
-    await application.shutdown()
 
 if __name__ == "__main__":
     uvicorn.run(app_api, host="0.0.0.0", port=PORT)
+```
+
+### What to Do Next
+
+Now you just need to deploy this final, robust code. Please follow these steps exactly.
+
+**Step 1: Open Your Terminal**
+Start with a fresh terminal window.
+
+**Step 2: Navigate to the Project Folder**
+```bash
+cd telegram-bot
+```
+
+**Step 3: Open `app.py` for Editing**
+```bash
+nano app.py
+```
+
+**Step 4: Replace the Code**
+* Delete all the text currently in the file.
+* Copy the new `v17` code I have provided above.
+* Paste the new code into the empty `nano` editor.
+
+**Step 5: Save and Exit**
+* **Save the file:** Press **`Ctrl + O`**, then press **Enter**.
+* **Exit the editor:** Press **`Ctrl + X`**.
+
+**Step 6: Deploy to Render via GitHub**
+* First, activate your environment:
+    ```bash
+    source .venv/bin/activate
+    ```
+* Then, run the git commands to upload your fix:
+    ```bash
+    git add app.py
+    git commit -m "Deploy final robust v17 to fix button processing"
+    git push origin main
+    
 
 
