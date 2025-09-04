@@ -31,7 +31,6 @@ approval_db = {}
 app_api = FastAPI()
 
 # --- Telegram Bot Application Setup ---
-# We only use this for its .bot attribute to send messages and for initialization.
 application = Application.builder().token(BOT_TOKEN).build()
 
 
@@ -79,49 +78,64 @@ async def notify(request: Request):
         await application.bot.send_message(chat_id=ADMIN_CHAT_ID, text=text)
         return {"status": "generic_notification_sent"}
 
-# --- THIS IS THE NEW, ROBUST WEBHOOK HANDLER ---
+# --- THIS IS THE NEW, BULLETPROOF WEBHOOK HANDLER ---
 @app_api.post("/telegram")
 async def telegram_webhook(request: Request):
     """
-    This single function now handles all incoming updates from Telegram manually.
+    This function handles all incoming updates from Telegram and now includes
+    robust error logging.
     """
     global approval_db
     update_data = await request.json()
-    log.info(f"--- Received update from Telegram: {update_data}")
+    log.info(f"--- Raw Telegram Data Received: {update_data}")
 
-    # Check if this is a button press (a callback_query)
-    if "callback_query" in update_data:
-        callback_query = update_data["callback_query"]
-        callback_data = callback_query["data"]
-        message_id = callback_query["message"]["message_id"]
-        
-        # Acknowledge the button press to stop the "Loading..." spinner
-        await application.bot.answer_callback_query(callback_query_id=callback_query["id"])
-        
-        action, machine_id = callback_data.split("_", 1)
-        user_info = f"Request for Machine ID: {machine_id}"
-        
-        if action == "approve":
-            approval_db[machine_id] = "approved"
-            await application.bot.edit_message_text(text=f"✅ Approved\n\n{user_info}", chat_id=ADMIN_CHAT_ID, message_id=message_id)
-        elif action == "deny":
-            approval_db[machine_id] = "denied"
-            await application.bot.edit_message_text(text=f"❌ Denied\n\n{user_info}", chat_id=ADMIN_CHAT_ID, message_id=message_id)
+    try:
+        # Check if this is a button press (a callback_query)
+        if "callback_query" in update_data:
+            log.info("--- Processing a button press (callback_query)...")
+            callback_query = update_data["callback_query"]
+            callback_data = callback_query["data"]
+            message_id = callback_query["message"]["message_id"]
+            chat_id = callback_query["message"]["chat"]["id"]
             
-    # Check if it's a regular command message
-    elif "message" in update_data and "text" in update_data["message"]:
-        message = update_data["message"]
-        chat_id = message["chat"]["id"]
-        text = message["text"]
-        
-        if text == "/start":
-            await application.bot.send_message(chat_id=chat_id, text=f"Hello! I am the remote approval bot (v17-final). Your Chat ID is: {chat_id}")
-        elif text == "/clear_cache" and chat_id == ADMIN_CHAT_ID:
-            approval_db.clear()
-            await application.bot.send_message(chat_id=chat_id, text="✅ Server cache cleared.")
-            log.info("Approval cache cleared by admin.")
+            # Acknowledge the button press to stop the "Loading..." spinner
+            await application.bot.answer_callback_query(callback_query_id=callback_query["id"])
+            log.info("--- Acknowledged button press.")
+            
+            action, machine_id = callback_data.split("_", 1)
+            user_info = f"Request for Machine ID: {machine_id}"
+            
+            if action == "approve":
+                log.info(f"--- Action is 'approve' for machine_id: {machine_id}")
+                approval_db[machine_id] = "approved"
+                await application.bot.edit_message_text(text=f"✅ Approved\n\n{user_info}", chat_id=chat_id, message_id=message_id)
+                log.info(f"--- Successfully set status to 'approved' for {machine_id}.")
+            elif action == "deny":
+                log.info(f"--- Action is 'deny' for machine_id: {machine_id}")
+                approval_db[machine_id] = "denied"
+                await application.bot.edit_message_text(text=f"❌ Denied\n\n{user_info}", chat_id=chat_id, message_id=message_id)
+                log.info(f"--- Successfully set status to 'denied' for {machine_id}.")
+                
+        # Check if it's a regular command message
+        elif "message" in update_data and "text" in update_data["message"]:
+            log.info("--- Processing a text command...")
+            message = update_data["message"]
+            chat_id = message["chat"]["id"]
+            text = message["text"]
+            
+            if text == "/start":
+                await application.bot.send_message(chat_id=chat_id, text=f"Hello! I am the remote approval bot (v18-bulletproof). Your Chat ID is: {chat_id}")
+            elif text == "/clear_cache" and chat_id == ADMIN_CHAT_ID:
+                approval_db.clear()
+                await application.bot.send_message(chat_id=chat_id, text="✅ Server cache cleared.")
+                log.info("Approval cache cleared by admin.")
+
+    except Exception as e:
+        # If anything goes wrong, log the exact error.
+        log.error(f"--- !!! CRITICAL ERROR processing update: {e}", exc_info=True)
 
     return {"status": "ok"}
+
 
 # --- Server Startup and Shutdown Events ---
 @app_api.on_event("startup")
@@ -140,7 +154,7 @@ if __name__ == "__main__":
 
 ### What to Do Next
 
-Now you just need to deploy this final, robust code. Please follow these steps exactly.
+Now, we will deploy this new debugging version.
 
 **Step 1: Open Your Terminal**
 Start with a fresh terminal window.
@@ -157,7 +171,7 @@ nano app.py
 
 **Step 4: Replace the Code**
 * Delete all the text currently in the file.
-* Copy the new `v17` code I have provided above.
+* Copy the new `v18` code I have provided above.
 * Paste the new code into the empty `nano` editor.
 
 **Step 5: Save and Exit**
@@ -172,7 +186,7 @@ nano app.py
 * Then, run the git commands to upload your fix:
     ```bash
     git add app.py
-    git commit -m "Deploy final robust v17 to fix button processing"
+    git commit -m "Deploy v18 with bulletproof error handling"
     git push origin main
     
 
