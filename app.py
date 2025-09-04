@@ -89,12 +89,28 @@ async def telegram_webhook(request: Request):
 
 # --- Bot Command and Callback Handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(f"Hello! I am the remote approval bot (v14-stable). Your Chat ID is: {update.effective_chat.id}")
+    await update.message.reply_text(f"Hello! I am the remote approval bot (v16-final). Your Chat ID is: {update.effective_chat.id}")
+
+async def clear_cache(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin-only command to clear the in-memory approval database."""
+    user_id = update.effective_chat.id
+    if user_id == ADMIN_CHAT_ID:
+        global approval_db
+        approval_db.clear()
+        await update.message.reply_text("✅ Server cache cleared. You can now re-test.")
+        log.info("Approval cache cleared by admin.")
+    else:
+        await update.message.reply_text("⛔️ You are not authorized to use this command.")
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles the admin's 'Approve' or 'Deny' clicks."""
+    # --- THIS IS THE FIX ---
+    # We must declare that we are modifying the global approval_db variable.
+    global approval_db
+    
     query = update.callback_query
-    await query.answer()
+    await query.answer() # Acknowledge the button press
+    
     action, machine_id = query.data.split("_", 1)
     
     user_info = f"Request for Machine ID: {machine_id}"
@@ -107,6 +123,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(text=f"❌ Denied\n\n{user_info}")
 
 application.add_handler(CommandHandler("start", start))
+application.add_handler(CommandHandler("clear_cache", clear_cache))
 application.add_handler(CallbackQueryHandler(button_callback))
 
 # --- Server Startup and Shutdown Events ---
@@ -122,10 +139,7 @@ async def on_shutdown():
     await application.bot.delete_webhook()
     await application.shutdown()
 
-# --- Main entry point to run the server ---
 if __name__ == "__main__":
-    # --- THIS IS THE FIX ---
-    # The host must be '0.0.0.0' to work correctly on Render.
     uvicorn.run(app_api, host="0.0.0.0", port=PORT)
 
 
